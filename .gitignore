@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# Node / Vite
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# Env files
+.env
+.env.local
+.env.*.local
+*.env
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# REMBG model cache
+~/.u2net/
+
+# Logs
+*.log
+logs/
