@@ -5,6 +5,7 @@ Deploy on Railway — No Cloudflare R2 or credit card required.
 
 import os
 import io
+import gc
 import uuid
 import time
 import logging
@@ -26,30 +27,18 @@ logger = logging.getLogger("erasemate")
 app = FastAPI(
     title="EraseMate API",
     description="Professional AI background removal — Supabase Storage edition",
-    version="1.2.0",
+    version="1.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
 # ─── Middleware ───────────────────────────────────────────────────────────────
-# CRITICAL ORDER: CORSMiddleware MUST be added BEFORE GZipMiddleware.
-# Starlette executes middleware in REVERSE registration order (last added = runs first).
-# So adding CORS first means it runs LAST = outermost = handles preflight correctly.
-# If GZip runs before CORS, OPTIONS preflight responses get no CORS headers → blocked.
-
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-
-# Build allowed origins list — covers all Vercel preview URLs automatically
-ALLOWED_ORIGINS = [
-    FRONTEND_URL,
-    "http://localhost:5173",
-    "http://localhost:3000",
-]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # ← simplest fix; tighten after confirmed working
-    allow_credentials=False,      # ← must be False when allow_origins=["*"]
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[
@@ -68,9 +57,12 @@ SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 STORAGE_BUCKET       = os.getenv("SUPABASE_STORAGE_BUCKET", "erasemate-results")
-MAX_FILE_SIZE_MB     = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
+MAX_FILE_SIZE_MB     = int(os.getenv("MAX_FILE_SIZE_MB", "10"))   # reduced from 25 to save RAM
 FREE_LIMIT           = int(os.getenv("FREE_LIMIT", "5"))
 ALLOWED_TYPES        = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff", "image/gif"}
+
+# Max image dimension — lower = less RAM used during processing
+MAX_SIDE = int(os.getenv("MAX_IMAGE_SIDE", "1024"))  # reduced from 4096
 
 
 # ─── Supabase Storage ─────────────────────────────────────────────────────────
@@ -160,7 +152,7 @@ async def increment_usage(user_id: str) -> None:
 
 
 # ─── REMBG ────────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=1)   # only cache 1 model at a time to save RAM
 def get_session(model: str = "u2net"):
     logger.info(f"Loading REMBG model: {model}")
     return new_session(model)
@@ -168,26 +160,14 @@ def get_session(model: str = "u2net"):
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Pre-warming u2net model…")
-    try:
-        get_session("u2net")
-        logger.info("u2net loaded ✓")
-    except Exception as exc:
-        logger.warning(f"Model pre-warm failed (will load on demand): {exc}")
+    # ⚠️ No pre-warming — saves ~170MB RAM on free tier
+    # Model loads on first request (~5s delay) but stays cached after that
+    logger.info("EraseMate startup complete. Model will load on first request.")
 
 
 # ─── Image Processing ─────────────────────────────────────────────────────────
 def auto_select_model(image: Image.Image) -> str:
-    try:
-        w, h = image.size
-        cx, cy = w // 2, h // 2
-        region = image.crop((cx - w//8, cy - h//4, cx + w//8, cy + h//4)).convert("RGB")
-        pixels = list(region.getdata())
-        skin = sum(1 for r, g, b in pixels if r > 95 and g > 40 and b > 20 and r > g and r > b and abs(r - g) > 15)
-        if skin / max(len(pixels), 1) > 0.25 and h > w:
-            return "u2net_human_seg"
-    except Exception:
-        pass
+    # Always use u2net on free tier to avoid loading multiple models
     return "u2net"
 
 
@@ -213,25 +193,33 @@ def process_image(raw: bytes, model: str = "auto", enhance_edges: bool = True, b
     orig_w, orig_h = img.size
     metadata: dict = {"original_width": orig_w, "original_height": orig_h}
 
-    MAX_SIDE = 4096
+    # Always downscale to MAX_SIDE to keep RAM usage low
     scale = 1.0
     if max(orig_w, orig_h) > MAX_SIDE:
         scale = MAX_SIDE / max(orig_w, orig_h)
         img = img.resize((int(orig_w * scale), int(orig_h * scale)), Image.LANCZOS)
+        logger.info(f"Resized {orig_w}x{orig_h} → {img.size} (scale={scale:.2f})")
 
-    if model == "auto":
-        model = auto_select_model(img.convert("RGB"))
+    # Always use u2net on free tier
+    model = "u2net"
     metadata["model"] = model
 
     session = get_session(model)
-    result: Image.Image = remove(img, session=session, alpha_matting=True,
-        alpha_matting_foreground_threshold=240, alpha_matting_background_threshold=10,
-        alpha_matting_erode_size=10)
+    result: Image.Image = remove(
+        img,
+        session=session,
+        alpha_matting=True,
+        alpha_matting_foreground_threshold=240,
+        alpha_matting_background_threshold=10,
+        alpha_matting_erode_size=10,
+    )
+
+    # Free original image from memory immediately
+    del img
+    gc.collect()
 
     if enhance_edges:
         result = refine_mask(result)
-    if scale < 1.0:
-        result = result.resize((orig_w, orig_h), Image.LANCZOS)
 
     if bg_color and bg_color.lower() != "transparent":
         canvas = Image.new("RGBA", result.size, bg_color)
@@ -242,26 +230,40 @@ def process_image(raw: bytes, model: str = "auto", enhance_edges: bool = True, b
 
     buf = io.BytesIO()
     if fmt == "JPEG":
-        final.save(buf, format="JPEG", quality=95, optimize=True)
+        final.save(buf, format="JPEG", quality=92, optimize=True)
     else:
         final.save(buf, format="PNG", optimize=True, compress_level=6)
 
+    # Free processed image from memory
+    del final, result
+    gc.collect()
+
     output_bytes = buf.getvalue()
     elapsed = time.perf_counter() - t0
-    metadata.update({"output_format": ext, "output_size_bytes": len(output_bytes), "processing_time_ms": round(elapsed * 1000)})
-    logger.info(f"Processed {orig_w}x{orig_h} in {elapsed:.2f}s model={model}")
+    metadata.update({
+        "output_format": ext,
+        "output_size_bytes": len(output_bytes),
+        "processing_time_ms": round(elapsed * 1000),
+    })
+    logger.info(f"Processed {orig_w}x{orig_h} → {len(output_bytes)//1024}KB in {elapsed:.2f}s")
     return output_bytes, metadata
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"service": "EraseMate API", "status": "ok", "version": "1.2.0"}
+    return {"service": "EraseMate API", "status": "ok", "version": "1.3.0"}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat(), "storage": "supabase", "cors": "fixed-v1.2"}
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "storage": "supabase",
+        "max_image_side": MAX_SIDE,
+        "max_file_mb": MAX_FILE_SIZE_MB,
+    }
 
 
 @app.post("/api/remove-background")
@@ -300,6 +302,9 @@ async def remove_background(
     except Exception as exc:
         logger.exception("Unexpected processing error")
         raise HTTPException(500, f"Processing failed: {exc}")
+    finally:
+        del raw
+        gc.collect()
 
     if is_authenticated:
         background_tasks.add_task(increment_usage, user_id)
@@ -338,8 +343,8 @@ async def remove_background_batch(
 ):
     if not user or user.get("id") == "anonymous":
         raise HTTPException(401, "Authentication required for batch processing.")
-    if len(files) > 10:
-        raise HTTPException(400, "Maximum 10 files per batch request.")
+    if len(files) > 5:  # reduced from 10 to save RAM
+        raise HTTPException(400, "Maximum 5 files per batch request.")
 
     results = []
     for f in files:
@@ -352,11 +357,18 @@ async def remove_background_batch(
             job_id = str(uuid.uuid4())
             storage_path = f"results/{user['id']}/{job_id}.png"
             public_url = await upload_to_supabase_storage(output_bytes, storage_path, "image/png")
-            results.append({"filename": f.filename, "job_id": job_id, "url": public_url, "status": "success",
-                "metadata": {"processing_time_ms": metadata["processing_time_ms"], "model": metadata["model"],
-                    "original_size": f"{metadata['original_width']}x{metadata['original_height']}"}})
+            results.append({
+                "filename": f.filename, "job_id": job_id, "url": public_url, "status": "success",
+                "metadata": {
+                    "processing_time_ms": metadata["processing_time_ms"],
+                    "model": metadata["model"],
+                    "original_size": f"{metadata['original_width']}x{metadata['original_height']}",
+                },
+            })
         except Exception as exc:
             results.append({"filename": f.filename, "status": "error", "error": str(exc)})
+        finally:
+            gc.collect()
 
     successful = sum(1 for r in results if r.get("status") == "success")
     if successful:
@@ -367,10 +379,8 @@ async def remove_background_batch(
 @app.get("/api/models")
 async def list_models():
     return {"models": [
-        {"id": "auto",              "name": "Auto-detect",         "description": "Automatically picks the best model",             "recommended": True},
-        {"id": "u2net",             "name": "General Purpose",     "description": "Best for products, animals, objects",            "speed": "medium"},
-        {"id": "u2net_human_seg",   "name": "Portrait & People",   "description": "Optimised for portraits and human silhouettes",  "speed": "medium"},
-        {"id": "isnet-general-use", "name": "ISNet (Sharp Edges)", "description": "Newer architecture with crisper edge detection", "speed": "slow"},
+        {"id": "auto",    "name": "Auto-detect",     "description": "Automatically picks the best model", "recommended": True},
+        {"id": "u2net",   "name": "General Purpose", "description": "Best for products, animals, objects", "speed": "medium"},
     ]}
 
 
@@ -382,8 +392,10 @@ async def get_user_usage(user: Optional[dict] = Depends(verify_token)):
     plan = (user.get("user_metadata") or {}).get("plan", "free")
     limit = FREE_LIMIT if plan == "free" else -1
     remaining = max(0, limit - today) if limit != -1 else -1
-    return {"user_id": user["id"], "email": user.get("email"), "plan": plan,
-            "today_count": today, "limit": limit, "remaining": remaining, "storage": "supabase"}
+    return {
+        "user_id": user["id"], "email": user.get("email"), "plan": plan,
+        "today_count": today, "limit": limit, "remaining": remaining, "storage": "supabase",
+    }
 
 
 @app.get("/api/storage/check")
@@ -392,8 +404,10 @@ async def storage_check():
         return {"configured": False, "reason": "SUPABASE_URL or SUPABASE_SERVICE_KEY not set"}
     try:
         async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(f"{SUPABASE_URL}/storage/v1/bucket/{STORAGE_BUCKET}",
-                headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "apikey": SUPABASE_SERVICE_KEY})
+            resp = await client.get(
+                f"{SUPABASE_URL}/storage/v1/bucket/{STORAGE_BUCKET}",
+                headers={"Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "apikey": SUPABASE_SERVICE_KEY},
+            )
         if resp.status_code == 200:
             return {"configured": True, "bucket": STORAGE_BUCKET, "status": "reachable"}
         return {"configured": False, "bucket": STORAGE_BUCKET, "http_status": resp.status_code, "detail": resp.text}
