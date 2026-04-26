@@ -18,6 +18,6 @@ COPY . .
 # Pre-download REMBG models at build time so startup is instant
 RUN python -c "from rembg import new_session; new_session('u2net'); new_session('u2net_human_seg')" || true
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD ["gunicorn", "main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120", "--keepalive", "5"]
+CMD ["sh", "-c", "gunicorn main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8080} --workers 2 --timeout 120 --keepalive 5"]
