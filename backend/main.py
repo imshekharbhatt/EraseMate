@@ -1,6 +1,6 @@
 """
 EraseMate Backend — FastAPI + REMBG + Pillow + Supabase Storage
-Deploy on Railway — No Cloudflare R2 or credit card required.
+Deploy on Hugging Face Spaces — Free 16GB RAM
 """
 
 import os
@@ -26,8 +26,8 @@ logger = logging.getLogger("erasemate")
 
 app = FastAPI(
     title="EraseMate API",
-    description="Professional AI background removal — Supabase Storage edition",
-    version="1.3.0",
+    description="Professional AI background removal — Hugging Face Spaces edition",
+    version="1.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -37,7 +37,12 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        FRONTEND_URL,
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
+    allow_origin_regex=r"https://erasemate[a-zA-Z0-9\-]*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,12 +62,10 @@ SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 STORAGE_BUCKET       = os.getenv("SUPABASE_STORAGE_BUCKET", "erasemate-results")
-MAX_FILE_SIZE_MB     = int(os.getenv("MAX_FILE_SIZE_MB", "10"))   # reduced from 25 to save RAM
+MAX_FILE_SIZE_MB     = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
 FREE_LIMIT           = int(os.getenv("FREE_LIMIT", "5"))
+MAX_SIDE             = int(os.getenv("MAX_IMAGE_SIDE", "2048"))   # HF has 16GB RAM
 ALLOWED_TYPES        = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff", "image/gif"}
-
-# Max image dimension — lower = less RAM used during processing
-MAX_SIDE = int(os.getenv("MAX_IMAGE_SIDE", "1024"))  # reduced from 4096
 
 
 # ─── Supabase Storage ─────────────────────────────────────────────────────────
@@ -152,7 +155,7 @@ async def increment_usage(user_id: str) -> None:
 
 
 # ─── REMBG ────────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=1)   # only cache 1 model at a time to save RAM
+@lru_cache(maxsize=4)
 def get_session(model: str = "u2net"):
     logger.info(f"Loading REMBG model: {model}")
     return new_session(model)
@@ -160,14 +163,27 @@ def get_session(model: str = "u2net"):
 
 @app.on_event("startup")
 async def startup_event():
-    # ⚠️ No pre-warming — saves ~170MB RAM on free tier
-    # Model loads on first request (~5s delay) but stays cached after that
-    logger.info("EraseMate startup complete. Model will load on first request.")
+    # Pre-warm on HF Spaces — plenty of RAM
+    logger.info("Pre-warming u2net model…")
+    try:
+        get_session("u2net")
+        logger.info("u2net loaded ✓")
+    except Exception as exc:
+        logger.warning(f"Model pre-warm failed (will load on demand): {exc}")
 
 
 # ─── Image Processing ─────────────────────────────────────────────────────────
 def auto_select_model(image: Image.Image) -> str:
-    # Always use u2net on free tier to avoid loading multiple models
+    try:
+        w, h = image.size
+        cx, cy = w // 2, h // 2
+        region = image.crop((cx - w//8, cy - h//4, cx + w//8, cy + h//4)).convert("RGB")
+        pixels = list(region.getdata())
+        skin = sum(1 for r, g, b in pixels if r > 95 and g > 40 and b > 20 and r > g and r > b and abs(r - g) > 15)
+        if skin / max(len(pixels), 1) > 0.25 and h > w:
+            return "u2net_human_seg"
+    except Exception:
+        pass
     return "u2net"
 
 
@@ -193,33 +209,30 @@ def process_image(raw: bytes, model: str = "auto", enhance_edges: bool = True, b
     orig_w, orig_h = img.size
     metadata: dict = {"original_width": orig_w, "original_height": orig_h}
 
-    # Always downscale to MAX_SIDE to keep RAM usage low
     scale = 1.0
     if max(orig_w, orig_h) > MAX_SIDE:
         scale = MAX_SIDE / max(orig_w, orig_h)
         img = img.resize((int(orig_w * scale), int(orig_h * scale)), Image.LANCZOS)
-        logger.info(f"Resized {orig_w}x{orig_h} → {img.size} (scale={scale:.2f})")
 
-    # Always use u2net on free tier
-    model = "u2net"
+    if model == "auto":
+        model = auto_select_model(img.convert("RGB"))
     metadata["model"] = model
 
     session = get_session(model)
     result: Image.Image = remove(
-        img,
-        session=session,
-        alpha_matting=True,
+        img, session=session, alpha_matting=True,
         alpha_matting_foreground_threshold=240,
         alpha_matting_background_threshold=10,
         alpha_matting_erode_size=10,
     )
 
-    # Free original image from memory immediately
     del img
     gc.collect()
 
     if enhance_edges:
         result = refine_mask(result)
+    if scale < 1.0:
+        result = result.resize((orig_w, orig_h), Image.LANCZOS)
 
     if bg_color and bg_color.lower() != "transparent":
         canvas = Image.new("RGBA", result.size, bg_color)
@@ -230,11 +243,10 @@ def process_image(raw: bytes, model: str = "auto", enhance_edges: bool = True, b
 
     buf = io.BytesIO()
     if fmt == "JPEG":
-        final.save(buf, format="JPEG", quality=92, optimize=True)
+        final.save(buf, format="JPEG", quality=95, optimize=True)
     else:
         final.save(buf, format="PNG", optimize=True, compress_level=6)
 
-    # Free processed image from memory
     del final, result
     gc.collect()
 
@@ -245,14 +257,14 @@ def process_image(raw: bytes, model: str = "auto", enhance_edges: bool = True, b
         "output_size_bytes": len(output_bytes),
         "processing_time_ms": round(elapsed * 1000),
     })
-    logger.info(f"Processed {orig_w}x{orig_h} → {len(output_bytes)//1024}KB in {elapsed:.2f}s")
+    logger.info(f"Processed {orig_w}x{orig_h} → {len(output_bytes)//1024}KB in {elapsed:.2f}s model={model}")
     return output_bytes, metadata
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"service": "EraseMate API", "status": "ok", "version": "1.3.0"}
+    return {"service": "EraseMate API", "status": "ok", "version": "1.4.0"}
 
 
 @app.get("/health")
@@ -261,6 +273,7 @@ async def health():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "storage": "supabase",
+        "host": "huggingface-spaces",
         "max_image_side": MAX_SIDE,
         "max_file_mb": MAX_FILE_SIZE_MB,
     }
@@ -343,8 +356,8 @@ async def remove_background_batch(
 ):
     if not user or user.get("id") == "anonymous":
         raise HTTPException(401, "Authentication required for batch processing.")
-    if len(files) > 5:  # reduced from 10 to save RAM
-        raise HTTPException(400, "Maximum 5 files per batch request.")
+    if len(files) > 10:
+        raise HTTPException(400, "Maximum 10 files per batch request.")
 
     results = []
     for f in files:
@@ -379,8 +392,10 @@ async def remove_background_batch(
 @app.get("/api/models")
 async def list_models():
     return {"models": [
-        {"id": "auto",    "name": "Auto-detect",     "description": "Automatically picks the best model", "recommended": True},
-        {"id": "u2net",   "name": "General Purpose", "description": "Best for products, animals, objects", "speed": "medium"},
+        {"id": "auto",              "name": "Auto-detect",         "description": "Automatically picks the best model",             "recommended": True},
+        {"id": "u2net",             "name": "General Purpose",     "description": "Best for products, animals, objects",            "speed": "medium"},
+        {"id": "u2net_human_seg",   "name": "Portrait & People",   "description": "Optimised for portraits and human silhouettes",  "speed": "medium"},
+        {"id": "isnet-general-use", "name": "ISNet (Sharp Edges)", "description": "Newer architecture with crisper edge detection", "speed": "slow"},
     ]}
 
 
