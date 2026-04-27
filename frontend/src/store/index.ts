@@ -64,6 +64,7 @@ const INITIAL_STEPS: ProcessingStep[] = [
 type ProcessingState = {
   steps: ProcessingStep[]
   progress: number
+  elapsedMs: number
   status: 'idle' | 'uploading' | 'processing' | 'done' | 'error'
   errorMessage: string | null
   resetSteps: () => void
@@ -71,17 +72,20 @@ type ProcessingState = {
   setProgress: (pct: number) => void
   setStatus: (status: ProcessingState['status']) => void
   setError: (msg: string | null) => void
-  runStepAnimation: (onComplete: () => void) => void
+  setElapsed: (ms: number) => void
+  runStepAnimation: (onComplete: () => void) => () => void
+  markAllDone: () => void
 }
 
 export const useProcessingStore = create<ProcessingState>((set, get) => ({
   steps: INITIAL_STEPS.map((s) => ({ ...s })),
   progress: 0,
+  elapsedMs: 0,
   status: 'idle',
   errorMessage: null,
 
   resetSteps: () =>
-    set({ steps: INITIAL_STEPS.map((s) => ({ ...s })), progress: 0, errorMessage: null }),
+    set({ steps: INITIAL_STEPS.map((s) => ({ ...s })), progress: 0, elapsedMs: 0, errorMessage: null }),
 
   setStepStatus: (id, status) =>
     set((s) => ({
@@ -91,21 +95,41 @@ export const useProcessingStore = create<ProcessingState>((set, get) => ({
   setProgress: (pct) => set({ progress: pct }),
   setStatus: (status) => set({ status }),
   setError: (errorMessage) => set({ errorMessage, status: 'error' }),
+  setElapsed: (ms) => set({ elapsedMs: ms }),
 
+  markAllDone: () =>
+    set((s) => ({ steps: s.steps.map((step) => ({ ...step, status: 'done' as const })) })),
+
+  // Runs a slow background animation (does NOT auto-complete the last step).
+  // Returns a cleanup fn. Call markAllDone() + onComplete() from the API handler.
   runStepAnimation: (onComplete) => {
     const { steps, setStepStatus } = get()
     setStepStatus(steps[0].id, 'active')
     let i = 0
-    const interval = setInterval(() => {
+    let stopped = false
+    // Pace each intermediate step ~4s apart so animation stays believable
+    // even when the API takes 30+ seconds (HF cold start).
+    const STEP_MS = 4000
+
+    const tick = () => {
+      if (stopped) return
       setStepStatus(steps[i].id, 'done')
       i++
-      if (i < steps.length) {
+      // Only advance up to the second-to-last step; the final "output" step
+      // should only complete when the API actually responds.
+      if (i < steps.length - 1) {
         setStepStatus(steps[i].id, 'active')
-      } else {
-        clearInterval(interval)
-        setTimeout(onComplete, 300)
+        setTimeout(tick, STEP_MS)
+      } else if (i === steps.length - 1) {
+        setStepStatus(steps[i].id, 'active')
+        // Don't call onComplete — the hook calls it after API finishes
       }
-    }, 520)
+    }
+
+    setTimeout(tick, STEP_MS)
+    // onComplete stored for external use (not used by timer)
+    void onComplete
+    return () => { stopped = true }
   },
 }))
 

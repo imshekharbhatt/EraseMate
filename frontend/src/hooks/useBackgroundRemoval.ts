@@ -1,62 +1,54 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { removeBackground } from '../lib/api'
 import { useImageStore, useProcessingStore, useToastStore } from '../store'
 import { useAuthStore } from '../store'
 
 export function useBackgroundRemoval() {
   const { setOriginal, setResult } = useImageStore()
-  const { resetSteps, setStatus, setError, runStepAnimation, setProgress } = useProcessingStore()
+  const { resetSteps, setStatus, setError, runStepAnimation, setProgress, setElapsed, markAllDone } = useProcessingStore()
   const { addToast } = useToastStore()
   const { user } = useAuthStore()
+  const cleanupRef = useRef<(() => void) | null>(null)
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const startTimeRef = useRef<number>(0)
 
   const processFile = useCallback(
     async (file: File, options: { model?: string; enhanceEdges?: boolean } = {}) => {
-      // Validate
+      // ── Validate ──────────────────────────────────────────────────────────
       const VALID_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff', 'image/gif']
       if (!VALID_TYPES.includes(file.type) && !file.name.match(/\.(jpg|jpeg|png|webp|bmp|tiff?|gif)$/i)) {
         addToast('Unsupported file format. Please use JPG, PNG, WebP, BMP, or TIFF.', 'error')
         return
       }
-
       const MAX_MB = 25
       if (file.size > MAX_MB * 1024 * 1024) {
         addToast(`File too large. Maximum size is ${MAX_MB} MB.`, 'error')
         return
       }
 
-      // Set original preview
+      // ── Reset UI state ────────────────────────────────────────────────────
+      if (cleanupRef.current) cleanupRef.current()
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
+
       const originalUrl = URL.createObjectURL(file)
       setOriginal(file, originalUrl)
-
-      // Reset state
       resetSteps()
       setStatus('processing')
       setProgress(0)
+      startTimeRef.current = Date.now()
 
-      // Start step animation + API call concurrently
-      let apiDone = false
-      let animDone = false
-      let resultData: { blob: Blob; url: string; processingMs: number; model: string; r2Url?: string } | null = null
+      // Tick elapsed timer every second so ProcessingBox can show "Xm Ys"
+      elapsedTimerRef.current = setInterval(() => {
+        setElapsed(Date.now() - startTimeRef.current)
+      }, 1000)
 
-      const tryFinish = () => {
-        if (apiDone && animDone && resultData) {
-          setResult(resultData.blob, resultData.url, {
-            processingMs: resultData.processingMs,
-            model: resultData.model,
-            r2Url: resultData.r2Url,
-          })
-          setStatus('done')
-          addToast('Background removed successfully ✓', 'success')
-        }
-      }
-
-      // Animate steps (visual progress, ~3s)
-      runStepAnimation(() => {
-        animDone = true
-        tryFinish()
+      // ── Start background step animation ───────────────────────────────────
+      // Cleanup fn so we can stop if an error fires early
+      cleanupRef.current = runStepAnimation(() => {
+        // This cb is intentionally empty — completion is driven by the API
       })
 
-      // Call API
+      // ── Call API ──────────────────────────────────────────────────────────
       try {
         const result = await removeBackground(file, {
           model: (options.model as any) || 'auto',
@@ -65,16 +57,25 @@ export function useBackgroundRemoval() {
           onProgress: (pct) => setProgress(pct),
         })
 
-        resultData = {
-          blob: result.blob,
-          url: result.url,
+        // API done — finish animation immediately then show result
+        if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
+        markAllDone()
+        setProgress(100)
+
+        // Small pause so the "done" state is visible before transitioning
+        await new Promise((r) => setTimeout(r, 400))
+
+        setResult(result.blob, result.url, {
           processingMs: result.processingMs,
           model: result.model,
           r2Url: result.resultUrl,
-        }
-        apiDone = true
-        tryFinish()
+        })
+        setStatus('done')
+        addToast('Background removed successfully ✓', 'success')
       } catch (err: any) {
+        if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
+        if (cleanupRef.current) cleanupRef.current()
+
         const msg = (() => {
           switch (err.message) {
             case 'FREE_LIMIT_REACHED':
@@ -84,9 +85,9 @@ export function useBackgroundRemoval() {
             case 'UNSUPPORTED_FORMAT':
               return 'Unsupported image format.'
             case 'NETWORK_ERROR':
-              return 'Network error. Check your connection.'
+              return 'Network error. Check your connection and try again.'
             case 'TIMEOUT':
-              return 'Processing timed out. Try a smaller image.'
+              return 'Processing timed out. Try a smaller image or try again shortly.'
             default:
               return err.message || 'Processing failed. Please try again.'
           }
@@ -95,7 +96,7 @@ export function useBackgroundRemoval() {
         addToast(msg, 'error')
       }
     },
-    [user, setOriginal, setResult, resetSteps, setStatus, setError, runStepAnimation, setProgress, addToast]
+    [user, setOriginal, setResult, resetSteps, setStatus, setError, runStepAnimation, setProgress, setElapsed, markAllDone, addToast]
   )
 
   return { processFile }
