@@ -72,8 +72,8 @@ export default function ResultSection({
   model,
   enhanceEdges,
 }: {
-  model: string;
-  enhanceEdges: boolean;
+  model?: string;
+  enhanceEdges?: boolean;
 }) {
   const {
     originalUrl,
