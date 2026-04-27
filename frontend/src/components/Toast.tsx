@@ -6,7 +6,7 @@ export default function Toast() {
   const { toasts, removeToast } = useToastStore();
 
   return (
-    <div className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 pointer-events-none items-center">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} onRemove={removeToast} />
       ))}
