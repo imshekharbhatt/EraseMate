@@ -308,7 +308,7 @@ export default function ResultSection({
             <canvas
               ref={canvasRef}
               className="max-h-[280px] sm:max-h-[400px] lg:max-h-[500px] max-w-full object-contain block pointer-events-none"
-              style={{ imageRendering: "high-quality" }}
+              style={{ imageRendering: "auto" }}
             />
           </div>
 
