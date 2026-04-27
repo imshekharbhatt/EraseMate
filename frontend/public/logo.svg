@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" width="200" height="48">
+  <!-- Icon -->
+  <rect x="0" y="0" width="48" height="48" rx="12" fill="#5b3ff8"/>
+  <!-- Eraser body -->
+  <rect x="9" y="16" width="30" height="16" rx="3" fill="#ffffff" opacity="0.95"/>
+  <!-- Pink tip -->
+  <rect x="9" y="16" width="11" height="16" rx="3" fill="#f472b6"/>
+  <!-- Metal band -->
+  <rect x="18.5" y="16" width="2.5" height="16" fill="#c4b8ff"/>
+  <!-- Shine -->
+  <rect x="22" y="19" width="12" height="3" rx="1.5" fill="#ffffff" opacity="0.35"/>
+  <!-- Sparkles -->
+  <circle cx="38" cy="13" r="2.5" fill="#ffffff" opacity="0.9"/>
+  <circle cx="44" cy="9" r="1.5" fill="#c4b8ff" opacity="0.75"/>
+  <circle cx="33" cy="10" r="1" fill="#ffffff" opacity="0.6"/>
+  <!-- Wordmark -->
+  <text x="58" y="31" font-family="system-ui,-apple-system,sans-serif" font-weight="700" font-size="22" fill="#5b3ff8">Erase</text>
+  <text x="118" y="31" font-family="system-ui,-apple-system,sans-serif" font-weight="700" font-size="22" fill="#1a1637">Mate</text>
+</svg>

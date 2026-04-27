@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#5b3ff8"/>
+  <!-- Eraser body -->
+  <rect x="10" y="22" width="44" height="22" rx="5" fill="#ffffff" opacity="0.95"/>
+  <!-- Pink eraser tip -->
+  <rect x="10" y="22" width="16" height="22" rx="5" fill="#f472b6"/>
+  <!-- Metal band -->
+  <rect x="24" y="22" width="4" height="22" fill="#c4b8ff"/>
+  <!-- Shine -->
+  <rect x="30" y="27" width="18" height="4" rx="2" fill="#ffffff" opacity="0.35"/>
+  <!-- Sparkles -->
+  <circle cx="52" cy="17" r="3.5" fill="#ffffff" opacity="0.9"/>
+  <circle cx="59" cy="11" r="2" fill="#c4b8ff" opacity="0.75"/>
+  <circle cx="44" cy="12" r="1.5" fill="#ffffff" opacity="0.6"/>
+</svg>
