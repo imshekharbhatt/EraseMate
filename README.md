@@ -10,8 +10,8 @@ AI-powered background removal as a web application and REST API. Built on U2Net 
 
 | | |
 |---|---|
-| Frontend | React 18, TypeScript, Vite, Tailwind CSS — deployed on Vercel |
-| Backend | Python, FastAPI, REMBG, Pillow — deployed on Hugging Face Spaces |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS - deployed on Vercel |
+| Backend | Python, FastAPI, REMBG, Pillow - deployed on Hugging Face Spaces |
 | Infrastructure | Supabase (Auth, PostgreSQL, Storage) |
 
 ---
@@ -113,9 +113,9 @@ VITE_SUPABASE_ANON_KEY=
 
 ## Deployment
 
-**Frontend — Vercel:** Connect the `frontend/` directory, add environment variables, deploy. SPA routing is pre-configured in `vercel.json`.
+**Frontend - Vercel:** Connect the `frontend/` directory, add environment variables, deploy. SPA routing is pre-configured in `vercel.json`.
 
-**Backend — Hugging Face Spaces:** Create a Docker Space, push `hf-erasemate/`, add environment variables as repository secrets. The U2Net model pre-warms at startup.
+**Backend - Hugging Face Spaces:** Create a Docker Space, push `hf-erasemate/`, add environment variables as repository secrets. The U2Net model pre-warms at startup.
 
 ---
 
